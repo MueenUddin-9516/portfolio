@@ -4,8 +4,9 @@ Two independent sources, so a failure in one never blanks the other:
 
   1. OpenAlex (free, no key) -> the citations-per-year chart and its total.
   2. Google Scholar          -> headline citations, h-index and i10-index.
-     Via SerpAPI when the repo secret SERPAPI_KEY is set, otherwise via the
-     `scholarly` package, which Google often blocks from CI servers.
+     Only when the repo secret SERPAPI_KEY is set. Google blocks direct
+     scraping from CI, so without the key these figures stay as they are
+     and can be edited by hand in index.html whenever they drift.
 
 If a source can't be reached, the page keeps the numbers it already has
 rather than showing wrong ones.
@@ -55,14 +56,8 @@ def scholar_serpapi():
     return {"citations": vals["citations"], "h": vals["h_index"], "i10": vals["i10_index"]}
 
 
-def scholar_scholarly():
-    from scholarly import scholarly
-    a = scholarly.fill(scholarly.search_author_id(SCHOLAR_ID), sections=["indices"])
-    return {"citations": a["citedby"], "h": a["hindex"], "i10": a["i10index"]}
-
-
 def scholar_stats():
-    for fn in (scholar_serpapi, scholar_scholarly):
+    for fn in (scholar_serpapi,):
         try:
             s = fn()
         except Exception as e:
