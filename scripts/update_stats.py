@@ -1,25 +1,44 @@
-"""Weekly refresh of Google Scholar figures on the portfolio page.
+"""Weekly refresh of the research figures on the portfolio page.
 
-Reads citations, h-index and i10-index for the Scholar profile below and
-writes them into index.html (elements tagged data-gs="citations|h|i10" and
-the two <meta> description tags). If Scholar can't be reached, the page is
-left unchanged so a bad fetch never wipes the numbers.
+Two independent sources, so a failure in one never blanks the other:
 
-Source order:
-  1. SerpAPI (needs repo secret SERPAPI_KEY; free tier covers weekly runs)
-  2. The `scholarly` package (free, but Google often blocks GitHub's servers)
+  1. OpenAlex (free, no key) -> the citations-per-year chart and its total.
+  2. Google Scholar          -> headline citations, h-index and i10-index.
+     Via SerpAPI when the repo secret SERPAPI_KEY is set, otherwise via the
+     `scholarly` package, which Google often blocks from CI servers.
+
+If a source can't be reached, the page keeps the numbers it already has
+rather than showing wrong ones.
 """
+import json
 import os
 import re
 import sys
 
 import requests
 
+ORCID = "0000-0003-1919-3407"
 SCHOLAR_ID = "ULNFqZIAAAAJ"
 PAGE = "index.html"
+CITE_FILE = "assets/citations-by-year.json"
+UA = {"User-Agent": "mueenuddin-portfolio/1.0 (mailto:mueen.uddin@udst.edu.qa)"}
 
 
-def from_serpapi():
+# --------------------------------------------------------------- OpenAlex
+def citations_by_year():
+    """Return {year: citations} from OpenAlex, or None if unavailable."""
+    r = requests.get(
+        "https://api.openalex.org/authors/https://orcid.org/" + ORCID,
+        headers=UA, timeout=60,
+    )
+    r.raise_for_status()
+    rows = r.json().get("counts_by_year", [])
+    out = {int(d["year"]): int(d["cited_by_count"]) for d in rows if d.get("cited_by_count")}
+    return dict(sorted(out.items())) if len(out) >= 5 else None
+
+
+# ----------------------------------------------------------- Google Scholar
+def scholar_serpapi():
     key = os.environ.get("SERPAPI_KEY")
     if not key:
         return None
@@ -29,59 +48,79 @@ def from_serpapi():
         timeout=60,
     )
     r.raise_for_status()
-    table = r.json()["cited_by"]["table"]
     vals = {}
-    for row in table:
+    for row in r.json()["cited_by"]["table"]:
         (name, v), = row.items()
         vals[name] = v["all"]
     return {"citations": vals["citations"], "h": vals["h_index"], "i10": vals["i10_index"]}
 
 
-def from_scholarly():
-    try:
-        from scholarly import scholarly
-        a = scholarly.fill(scholarly.search_author_id(SCHOLAR_ID), sections=["indices"])
-        return {"citations": a["citedby"], "h": a["hindex"], "i10": a["i10index"]}
-    except Exception as e:  # blocked, captcha, etc.
-        print("scholarly failed:", e)
-        return None
+def scholar_scholarly():
+    from scholarly import scholarly
+    a = scholarly.fill(scholarly.search_author_id(SCHOLAR_ID), sections=["indices"])
+    return {"citations": a["citedby"], "h": a["hindex"], "i10": a["i10index"]}
 
 
-def main():
-    stats = None
-    for fn in (from_serpapi, from_scholarly):
+def scholar_stats():
+    for fn in (scholar_serpapi, scholar_scholarly):
         try:
-            stats = fn()
+            s = fn()
         except Exception as e:
             print(fn.__name__, "failed:", e)
-        if stats:
-            print("Got stats from", fn.__name__, stats)
-            break
-    if not stats or stats["citations"] < 1000:
-        print("No reliable stats; leaving page unchanged.")
-        return 0
+            continue
+        if s and s["citations"] > 1000:
+            print("Scholar stats from", fn.__name__, s)
+            return s
+    return None
 
-    cites = f"{stats['citations'] // 10 * 10:,}+"  # e.g. 9,567 -> 9,560+
-    h, i10 = str(stats["h"]), str(stats["i10"])
 
+# ------------------------------------------------------------------ rewrite
+def main():
     html = open(PAGE, encoding="utf-8").read()
-    new = re.sub(r'(data-gs="citations">)[^<]*(<)', rf"\g<1>{cites}\2", html)
-    new = re.sub(r'(data-gs="h">)[^<]*(<)', rf"\g<1>{h}\2", new)
-    new = re.sub(r'(data-gs="i10">)[^<]*(<)', rf"\g<1>{i10}\2", new)
+    before = html
 
-    def fix_meta(m):
-        tag = m.group(0)
-        tag = re.sub(r"[\d,]+\+ citations", f"{cites} citations", tag)
-        tag = re.sub(r"h-index \d+", f"h-index {h}", tag)
-        return tag
+    try:
+        cites = citations_by_year()
+    except Exception as e:
+        print("OpenAlex failed:", e)
+        cites = None
 
-    new = re.sub(r'<meta (name="description"|property="og:description")[^>]*>', fix_meta, new)
+    if cites:
+        total = sum(cites.values())
+        blob = json.dumps({str(k): v for k, v in cites.items()}, separators=(",", ":"))
+        html = re.sub(
+            r'(<script type="application/json" id="citeData">).*?(</script>)',
+            lambda m: m.group(1) + blob + m.group(2),
+            html, flags=re.S,
+        )
+        html = re.sub(r"OpenAlex \([\d,]+ in total\)", f"OpenAlex ({total:,} in total)", html)
+        os.makedirs(os.path.dirname(CITE_FILE), exist_ok=True)
+        with open(CITE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(cites, fh, indent=1)
+        print(f"Citations chart updated: {len(cites)} years, {total:,} total")
 
-    if new != html:
-        open(PAGE, "w", encoding="utf-8").write(new)
-        print("index.html updated:", cites, "citations, h", h, "i10", i10)
+    stats = scholar_stats()
+    if stats:
+        cites_txt = f"{stats['citations'] // 10 * 10:,}+"
+        h, i10 = str(stats["h"]), str(stats["i10"])
+        html = re.sub(r'(data-gs="citations">)[^<]*(<)', rf"\g<1>{cites_txt}\2", html)
+        html = re.sub(r'(data-gs="h">)[^<]*(<)', rf"\g<1>{h}\2", html)
+        html = re.sub(r'(data-gs="i10">)[^<]*(<)', rf"\g<1>{i10}\2", html)
+
+        def fix_meta(m):
+            tag = m.group(0)
+            tag = re.sub(r"[\d,]+\+ citations", f"{cites_txt} citations", tag)
+            tag = re.sub(r"h-index \d+", f"h-index {h}", tag)
+            return tag
+
+        html = re.sub(r'<meta (name="description"|property="og:description")[^>]*>', fix_meta, html)
+        print(f"Scholar figures updated: {cites_txt} citations, h {h}, i10 {i10}")
+
+    if html != before:
+        open(PAGE, "w", encoding="utf-8").write(html)
+        print("index.html written.")
     else:
-        print("Figures unchanged.")
+        print("Nothing changed.")
     return 0
 
 

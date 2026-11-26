@@ -173,6 +173,66 @@
     else new IntersectionObserver(function (e, o) { if (e[0].isIntersecting) { grow(); o.disconnect(); } }, { threshold: .3 }).observe(bars);
   }
 
+
+  /* ---------- citations per year (area chart) ---------- */
+  var citeEl = document.getElementById("cites");
+  var citeDataEl = document.getElementById("citeData");
+  if (citeEl && citeDataEl) {
+    var CB = JSON.parse(citeDataEl.textContent);
+    var yearsC = Object.keys(CB).map(Number).sort(function (a, b) { return a - b; });
+    var vals = yearsC.map(function (y) { return CB[y]; });
+    var maxV = Math.max.apply(null, vals);
+    var step = maxV > 1500 ? 500 : maxV > 600 ? 200 : 100;
+    var top = Math.ceil(maxV / step) * step;
+    var W = 520, H = 230, L = 42, R = 12, T = 20, B = 26;
+    var iw = W - L - R, ih = H - T - B;
+    var X = function (i) { return L + (iw * i) / (yearsC.length - 1); };
+    var Y = function (v) { return T + ih - (ih * v) / top; };
+
+    var grid = "", i;
+    for (var g = 0; g <= top; g += step) {
+      grid += '<line class="grid" x1="' + L + '" y1="' + Y(g).toFixed(1) + '" x2="' + (W - R) + '" y2="' + Y(g).toFixed(1) + '"/>' +
+              '<text class="gl" x="' + (L - 8) + '" y="' + (Y(g) + 4).toFixed(1) + '" text-anchor="end">' + (g >= 1000 ? (g / 1000) + "k" : g) + "</text>";
+    }
+    var line = "", area = "";
+    for (i = 0; i < yearsC.length; i++) {
+      line += (i ? " L" : "M") + X(i).toFixed(1) + " " + Y(vals[i]).toFixed(1);
+    }
+    area = line + " L" + X(yearsC.length - 1).toFixed(1) + " " + Y(0).toFixed(1) + " L" + X(0).toFixed(1) + " " + Y(0).toFixed(1) + " Z";
+
+    var dots = "", labels = "";
+    for (i = 0; i < yearsC.length; i++) {
+      var last = i === yearsC.length - 1;
+      dots += '<circle class="dot' + (last ? " last" : "") + '" cx="' + X(i).toFixed(1) + '" cy="' + Y(vals[i]).toFixed(1) + '" r="' + (last ? 4.5 : 2.6) + '"><title>' + yearsC[i] + ": " + vals[i].toLocaleString("en-US") + ' citations</title></circle>';
+      if (i % 2 === 0 || last) labels += '<text class="gl" x="' + X(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle">&rsquo;' + String(yearsC[i]).slice(2) + "</text>";
+    }
+    var pi = vals.indexOf(maxV);
+    var peak = '<text class="peak" x="' + X(pi).toFixed(1) + '" y="' + (Y(maxV) - 10).toFixed(1) + '" text-anchor="' + (pi > yearsC.length - 3 ? "end" : "middle") + '">' + maxV.toLocaleString("en-US") + "</text>";
+
+    citeEl.innerHTML = '<svg class="cites" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Citations per year from ' +
+      yearsC[0] + " to " + yearsC[yearsC.length - 1] + ", rising from " + vals[0] + " to a peak of " + maxV + '">' +
+      '<defs><linearGradient id="citeGrad" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="var(--teal)" stop-opacity=".34"/><stop offset="100%" stop-color="var(--teal)" stop-opacity="0"/>' +
+      "</linearGradient></defs>" + grid +
+      '<path class="area" d="' + area + '"/><path class="line" id="citeLine" d="' + line + '"/>' + dots + peak + labels + "</svg>";
+
+    var path = document.getElementById("citeLine");
+    if (path && !reduce && path.getTotalLength) {
+      var len = path.getTotalLength();
+      path.style.strokeDasharray = len; path.style.strokeDashoffset = len;
+      var fade = citeEl.querySelectorAll(".area, .dot, .peak");
+      fade.forEach(function (n) { n.style.opacity = 0; });
+      var run = function () {
+        path.style.transition = "stroke-dashoffset 1.3s cubic-bezier(.3,.8,.3,1)";
+        path.style.strokeDashoffset = 0;
+        fade.forEach(function (n) { n.style.transition = "opacity .6s .5s"; n.style.opacity = ""; });
+      };
+      if ("IntersectionObserver" in window) {
+        new IntersectionObserver(function (e, o) { if (e[0].isIntersecting) { run(); o.disconnect(); } }, { threshold: .3 }).observe(citeEl);
+      } else { run(); }
+    }
+  }
+
   /* publication browser */
   var rows = document.getElementById("pubRows");
   if (rows) {
